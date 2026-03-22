@@ -7,18 +7,26 @@ Serves:
 - Static files for the frontend
 """
 
-import os
+import logging
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from dungeonmaster.logging_config import setup_logging
 from dungeonmaster.web.routes import character, game, saves
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    from dungeonmaster.config import get_game_settings
+    settings = get_game_settings()
+    setup_logging(level=settings.log_level)
+    logger.info("Starting Dungeon Master server")
+
     app = FastAPI(
         title="Dungeon Master",
         description="Single-player tabletop RPG powered by AI",

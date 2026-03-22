@@ -27,6 +27,7 @@ Inherits all BookWorm settings and adds:
 | `MAX_COMPANIONS` | `2` | Maximum AI companion NPCs per session |
 | `MAX_CONVERSATION_HISTORY` | `50` | Max narrative entries to retain in memory |
 | `AUTO_SAVE_INTERVAL` | `10` | Auto-save game every N turns |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## .env Example
 

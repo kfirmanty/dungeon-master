@@ -13,6 +13,9 @@ from bookworm.config import Settings as BookwormSettings
 class GameSettings(BookwormSettings):
     """Extends BookWorm settings with game-specific configuration."""
 
+    # Logging
+    log_level: str = "INFO"
+
     # Rules system selection
     rules_system: str = "dnd5e"
 

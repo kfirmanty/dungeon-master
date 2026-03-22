@@ -8,10 +8,13 @@ The output is formatted so the content classifier (ingest.py) automatically
 tags chunks correctly for filtered RAG retrieval during gameplay.
 """
 
+import logging
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from bookworm.config import Settings
 from bookworm.embeddings.base import EmbeddingProvider
@@ -136,6 +139,15 @@ def convert_book_to_adventure(
             progress.current_chapter_title = chapter_title
         if error:
             progress.error = error
+        # Log with timestamp
+        msg = f"[{title}] status={progress.status}"
+        if progress.current_chapter:
+            msg += f" chapter={progress.current_chapter}/{progress.total_chapters}"
+        if chapter_title:
+            msg += f" ({chapter_title})"
+        if error:
+            msg += f" error={error}"
+        logger.info(msg)
         if on_progress:
             on_progress(progress)
 

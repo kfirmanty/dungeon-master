@@ -57,7 +57,7 @@ def _setup():
 
 @app.command()
 def ingest(
-    file_path: Path = typer.Argument(..., help="Path to the .txt book file"),
+    file_path: Path = typer.Argument(..., help="Path to the .txt or .md book file"),
     title: str = typer.Option(..., "--title", "-t", help="Book title"),
 ):
     """Ingest a book: read, chunk, embed, and store in the database."""
@@ -65,8 +65,8 @@ def ingest(
         console.print(f"[red]File not found: {file_path}[/red]")
         raise typer.Exit(code=1)
 
-    if not file_path.suffix == ".txt":
-        console.print("[yellow]Warning: BookWorm currently only supports .txt files.[/yellow]")
+    if file_path.suffix.lower() not in (".txt", ".md", ".markdown"):
+        console.print("[yellow]Warning: BookWorm supports .txt and .md files. Other formats may not work correctly.[/yellow]")
 
     settings, conn, embedding_provider, _ = _setup()
 

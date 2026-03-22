@@ -149,40 +149,39 @@ List all ingested content with chunk type breakdown.
 ```
 
 #### `POST /api/content/ingest`
-Upload and ingest a text file with content classification.
+Upload and ingest a text file with content classification. **Returns SSE stream.**
 
 **Request (multipart/form-data):**
-- `file`: .txt file
+- `file`: .txt or .md file
 - `title`: Document title (string)
 - `content_type`: Default type — `adventure`, `rule`, or `lore` (string)
 
-**Response:**
-```json
-{
-  "status": "success",
-  "book_id": "uuid",
-  "title": "Curse of Strahd",
-  "content_type_counts": {"encounter": 45, "npc": 12, "monster": 8, "lore": 30}
-}
+**Response (text/event-stream):**
+```
+data: {"status": "reading", "message": "Reading 'file.txt'...", "progress": 0.0}
+data: {"status": "chunking", "message": "Created 150 chunks", "progress": 0.2}
+data: {"status": "embedding", "message": "Embedding batch 3/5", "progress": 0.6}
+data: {"status": "storing", "message": "Storing in database...", "progress": 0.85}
+data: {"status": "classifying", "message": "Classifying chunks...", "progress": 0.92}
+data: {"status": "complete", "book_id": "uuid", "title": "...", "content_type_counts": {...}}
 ```
 
 #### `POST /api/content/convert`
-Convert a novel into a structured RPG adventure via LLM processing.
+Convert a novel into a structured RPG adventure via LLM processing. **Returns SSE stream.**
 
 **Request (multipart/form-data):**
-- `file`: .txt file (novel)
+- `file`: .txt or .md file (novel)
 - `title`: Adventure title (string)
 
-**Response:**
-```json
-{
-  "status": "complete",
-  "adventure_book_id": "uuid",
-  "title": "Dracula Adventure",
-  "content_type_counts": {"encounter": 20, "npc": 15, "monster": 5, "lore": 40},
-  "stats": {"locations": 15, "npcs": 12, "encounters": 20, "creatures": 8},
-  "chapters_processed": 27
-}
+**Response (text/event-stream):**
+```
+data: {"status": "reading", "message": "Reading book: 27 chapters found", "progress": 0.0}
+data: {"status": "converting", "chapter": 1, "total": 27, "title": "Chapter I", "progress": 0.037, "message": "Converting chapter 1/27: Chapter I"}
+data: {"status": "converting", "chapter": 2, "total": 27, "title": "Chapter II", "progress": 0.074, "message": "..."}
+...
+data: {"status": "assembling", "message": "Assembling adventure document"}
+data: {"status": "ingesting", "message": "Ingesting adventure content"}
+data: {"status": "complete", "adventure_book_id": "uuid", "title": "...", "stats": {...}, "chapters_processed": 27}
 ```
 
 ---

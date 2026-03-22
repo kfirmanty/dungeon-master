@@ -7,10 +7,11 @@ BookWorm is the RAG (Retrieval-Augmented Generation) foundation that powers the 
 ## Functional Requirements
 
 ### FR-01: Text Ingestion
-- Accept `.txt` files as input
-- Strip Project Gutenberg headers/footers automatically
-- Detect and split chapters using regex patterns (supports "Chapter N", "CHAPTER IV", "Part I", numbered/roman/word formats)
-- Fall back to treating the entire text as one chapter if no headings detected
+- Accept `.txt` and `.md` (Markdown) files as input
+- Auto-detect format from file extension
+- **Plain text (.txt)**: Strip Project Gutenberg headers/footers, detect chapters via "Chapter N" / "Part N" regex
+- **Markdown (.md)**: Detect chapters from H1/H2 headers (`# Title`, `## Section`), strip formatting (bold, italic, links, images, code blocks, HTML tags) while preserving content
+- Fall back to treating the entire file as one chapter if no headings detected
 - Split chapters into overlapping chunks respecting paragraph boundaries
 - Default chunk size: 500 characters, overlap: 100 characters
 

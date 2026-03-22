@@ -1,8 +1,9 @@
 """
 Text file reader with chapter detection.
 
+Supports both plain text (.txt) and Markdown (.md) files.
 This module handles the first step of the RAG ingestion pipeline:
-turning a raw .txt file into structured Chapter objects.
+turning a raw text file into structured Chapter objects.
 """
 
 import re
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from bookworm.models import Chapter
 
+
+# --- Plain text patterns ---
 
 # Matches Project Gutenberg start/end markers so we can strip boilerplate
 _GUTENBERG_START = re.compile(r"\*\*\* ?START OF .+?\*\*\*", re.IGNORECASE)
@@ -24,25 +27,77 @@ _CHAPTER_HEADING = re.compile(
     r"(?:\s*[:\.\-\u2014]\s*(.+))?$",  # optional separator + title
 )
 
+# --- Markdown patterns ---
+
+# Matches Markdown H1/H2 headers: "# Title" or "## Title"
+_MD_HEADING = re.compile(
+    r"^(#{1,2})\s+(.+)$",
+)
+
+# Markdown formatting patterns for stripping
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")  # ![alt](url) → alt text
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")  # [text](url) → text
+_MD_BOLD_ITALIC = re.compile(r"\*{1,3}(.+?)\*{1,3}")  # ***bold italic*** → text
+_MD_UNDERLINE_BOLD = re.compile(r"_{1,3}(.+?)_{1,3}")  # ___bold___ → text
+_MD_STRIKETHROUGH = re.compile(r"~~(.+?)~~")  # ~~text~~ → text
+_MD_INLINE_CODE = re.compile(r"`([^`]+)`")  # `code` → code
+_MD_CODE_BLOCK = re.compile(r"```[\s\S]*?```", re.MULTILINE)  # fenced code blocks
+_MD_HTML_TAG = re.compile(r"<[^>]+>")  # <tag> → remove
+_MD_HEADER_MARKER = re.compile(r"^#{1,6}\s+", re.MULTILINE)  # strip leading #'s
+
 
 def _strip_gutenberg(text: str) -> str:
-    """Remove Project Gutenberg headers and footers.
-
-    Gutenberg texts are wrapped with markers like:
-        *** START OF THE PROJECT GUTENBERG EBOOK TITLE ***
-        ... actual book content ...
-        *** END OF THE PROJECT GUTENBERG EBOOK TITLE ***
-
-    Everything outside these markers is license text we don't want to embed.
-    """
+    """Remove Project Gutenberg headers and footers."""
     start_match = _GUTENBERG_START.search(text)
     if start_match:
-        text = text[start_match.end() :]
+        text = text[start_match.end():]
 
-    # Search for END marker AFTER stripping START, because character positions shift
     end_match = _GUTENBERG_END.search(text)
     if end_match:
-        text = text[: end_match.start()]
+        text = text[:end_match.start()]
+
+    return text.strip()
+
+
+def _strip_markdown(text: str) -> str:
+    """Convert Markdown to clean prose for embedding.
+
+    Strips formatting while preserving the actual content:
+    - Images → alt text (or removed if no alt)
+    - Links → link text only
+    - Bold/italic/strikethrough → plain text
+    - Code blocks → content without fences
+    - HTML tags → removed
+    - Header markers → removed (headers detected separately for chapters)
+    """
+    # Remove fenced code blocks first (preserve content between fences)
+    text = _MD_CODE_BLOCK.sub(lambda m: m.group(0).strip("`").strip(), text)
+
+    # Images: keep alt text
+    text = _MD_IMAGE.sub(r"\1", text)
+
+    # Links: keep link text
+    text = _MD_LINK.sub(r"\1", text)
+
+    # Bold/italic/strikethrough: keep inner text
+    text = _MD_BOLD_ITALIC.sub(r"\1", text)
+    text = _MD_UNDERLINE_BOLD.sub(r"\1", text)
+    text = _MD_STRIKETHROUGH.sub(r"\1", text)
+
+    # Inline code: keep content
+    text = _MD_INLINE_CODE.sub(r"\1", text)
+
+    # HTML tags: remove
+    text = _MD_HTML_TAG.sub("", text)
+
+    # Strip header markers (# ## ### etc.) — we detect these separately
+    text = _MD_HEADER_MARKER.sub("", text)
+
+    # Clean up horizontal rules (--- or ***)
+    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+
+    # Clean up excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
 
@@ -56,7 +111,6 @@ def _parse_chapter_number(raw: str) -> int | None:
     if raw.isdigit():
         return int(raw)
 
-    # Roman numeral mapping (covers most books — up to ~40 chapters)
     roman = {
         "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
         "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
@@ -70,7 +124,6 @@ def _parse_chapter_number(raw: str) -> int | None:
     if raw.upper() in roman:
         return roman[raw.upper()]
 
-    # Word-based numbers
     words = {
         "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
         "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -84,12 +137,8 @@ def _parse_chapter_number(raw: str) -> int | None:
     return None
 
 
-def _detect_chapters(text: str) -> list[Chapter]:
-    """Split text into chapters by scanning for heading patterns.
-
-    Strategy: scan each line for a chapter heading regex match. When found,
-    everything between this heading and the next one becomes the chapter content.
-    """
+def _detect_chapters_plaintext(text: str) -> list[Chapter]:
+    """Detect chapters using plain text heading patterns (Chapter N, Part N)."""
     lines = text.split("\n")
     chapter_starts: list[tuple[int, int | None, str | None]] = []
 
@@ -105,8 +154,6 @@ def _detect_chapters(text: str) -> list[Chapter]:
 
     chapters = []
     for idx, (line_num, number, title) in enumerate(chapter_starts):
-        # Chapter content goes from the line after the heading
-        # to the line before the next heading (or end of file)
         start = line_num + 1
         end = chapter_starts[idx + 1][0] if idx + 1 < len(chapter_starts) else len(lines)
         content = "\n".join(lines[start:end]).strip()
@@ -115,20 +162,79 @@ def _detect_chapters(text: str) -> list[Chapter]:
     return chapters
 
 
+def _detect_chapters_markdown(text: str) -> list[Chapter]:
+    """Detect chapters using Markdown H1/H2 headers.
+
+    H1 (# Title) and H2 (## Title) are treated as chapter boundaries.
+    The title text is extracted and chapter numbers are parsed from it
+    if present (e.g., "# Chapter 3: The Cave" → number=3, title="The Cave").
+    """
+    lines = text.split("\n")
+    chapter_starts: list[tuple[int, int | None, str | None]] = []
+    counter = 0
+
+    for i, line in enumerate(lines):
+        match = _MD_HEADING.match(line.strip())
+        if match:
+            level = len(match.group(1))  # 1 for #, 2 for ##
+            raw_title = match.group(2).strip()
+
+            # Try to extract a chapter number from the title
+            # e.g., "Chapter 3: The Cave" or just "The Cave"
+            chapter_match = _CHAPTER_HEADING.match(raw_title)
+            if chapter_match:
+                number = _parse_chapter_number(chapter_match.group(1))
+                title = chapter_match.group(2).strip() if chapter_match.group(2) else raw_title
+            else:
+                counter += 1
+                number = counter
+                title = raw_title
+
+            chapter_starts.append((i, number, title))
+
+    if not chapter_starts:
+        return []
+
+    chapters = []
+    for idx, (line_num, number, title) in enumerate(chapter_starts):
+        start = line_num + 1
+        end = chapter_starts[idx + 1][0] if idx + 1 < len(chapter_starts) else len(lines)
+        content = "\n".join(lines[start:end]).strip()
+        if content:  # skip empty sections
+            chapters.append(Chapter(number=number, title=title, content=content))
+
+    return chapters
+
+
 def read_book(file_path: Path) -> tuple[str, list[Chapter]]:
-    """Read a .txt file and extract chapters.
+    """Read a text or Markdown file and extract chapters.
+
+    Auto-detects format from file extension:
+    - .md: Markdown header detection + formatting stripped
+    - .txt (or other): Gutenberg stripping + plain text chapter detection
 
     Returns:
         A tuple of (full_text, chapters).
-        full_text is the cleaned text (Gutenberg markers stripped).
+        full_text is the cleaned text ready for chunking.
         If no chapters are detected, returns a single Chapter containing all text.
     """
     raw_text = file_path.read_text(encoding="utf-8")
-    clean_text = _strip_gutenberg(raw_text)
+    is_markdown = file_path.suffix.lower() in (".md", ".markdown")
 
-    chapters = _detect_chapters(clean_text)
+    if is_markdown:
+        # Detect chapters from Markdown headers BEFORE stripping formatting
+        chapters = _detect_chapters_markdown(raw_text)
 
-    # If no chapter structure is found, treat the whole book as one chapter
+        # Strip Markdown formatting from the full text and chapter contents
+        clean_text = _strip_markdown(raw_text)
+        for chapter in chapters:
+            chapter.content = _strip_markdown(chapter.content)
+    else:
+        # Plain text: strip Gutenberg boilerplate, detect chapters
+        clean_text = _strip_gutenberg(raw_text)
+        chapters = _detect_chapters_plaintext(clean_text)
+
+    # If no chapter structure is found, treat the whole file as one chapter
     if not chapters:
         chapters = [Chapter(number=None, title=None, content=clean_text)]
 

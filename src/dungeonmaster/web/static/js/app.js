@@ -122,6 +122,36 @@ async function loadContentList() {
     }
 }
 
+/**
+ * Read a Server-Sent Events stream from a fetch response.
+ * Calls onEvent for each parsed SSE data payload.
+ */
+async function readSSEStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line in buffer
+
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    onEvent(data);
+                } catch (e) {
+                    // skip malformed SSE lines
+                }
+            }
+        }
+    }
+}
+
 async function uploadContent() {
     const title = document.getElementById('upload-title').value.trim();
     const contentType = document.getElementById('upload-type').value;
@@ -135,9 +165,11 @@ async function uploadContent() {
         return;
     }
 
-    statusEl.textContent = 'Uploading and ingesting... This may take a minute.';
+    statusEl.textContent = 'Starting ingestion...';
     statusEl.className = 'info-box';
     statusEl.classList.remove('hidden');
+    document.getElementById('btn-upload').disabled = true;
+    document.getElementById('btn-convert').disabled = true;
 
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
@@ -145,32 +177,37 @@ async function uploadContent() {
     formData.append('content_type', contentType);
 
     try {
-        const res = await fetch('/api/content/ingest', {
-            method: 'POST',
-            body: formData,
+        const res = await fetch('/api/content/ingest', { method: 'POST', body: formData });
+
+        let lastData = null;
+        await readSSEStream(res, (data) => {
+            lastData = data;
+            if (data.status === 'error') {
+                statusEl.textContent = `Error: ${data.message}`;
+                statusEl.className = 'info-box error';
+            } else if (data.status === 'complete') {
+                const counts = Object.entries(data.content_type_counts || {})
+                    .map(([type, count]) => `${count} ${type}`).join(', ');
+                statusEl.textContent = `Ingested "${data.title}": ${counts}`;
+                statusEl.className = 'info-box success';
+            } else {
+                // Progress update
+                const pct = data.progress ? `${Math.round(data.progress * 100)}%` : '';
+                statusEl.textContent = `${data.message || data.status} ${pct}`;
+            }
         });
-        const data = await res.json();
 
-        if (data.status === 'success') {
-            const counts = Object.entries(data.content_type_counts || {})
-                .map(([type, count]) => `${count} ${type}`)
-                .join(', ');
-            statusEl.textContent = `Ingested "${data.title}": ${counts}`;
-            statusEl.className = 'info-box success';
-
-            // Clear form
+        if (lastData && lastData.status === 'complete') {
             document.getElementById('upload-title').value = '';
             fileInput.value = '';
-
-            // Refresh the content dropdowns
             await loadContentList();
-        } else {
-            statusEl.textContent = `Error: ${data.message || 'Unknown error'}`;
-            statusEl.className = 'info-box error';
         }
     } catch (e) {
         statusEl.textContent = `Upload failed: ${e.message}`;
         statusEl.className = 'info-box error';
+    } finally {
+        document.getElementById('btn-upload').disabled = false;
+        document.getElementById('btn-convert').disabled = false;
     }
 }
 
@@ -186,11 +223,9 @@ async function convertBookToAdventure() {
         return;
     }
 
-    statusEl.textContent = 'Converting book to adventure... This will take several minutes as each chapter is processed by the LLM. Please wait.';
+    statusEl.textContent = 'Starting conversion...';
     statusEl.className = 'info-box';
     statusEl.classList.remove('hidden');
-
-    // Disable buttons during conversion
     document.getElementById('btn-convert').disabled = true;
     document.getElementById('btn-upload').disabled = true;
 
@@ -199,31 +234,36 @@ async function convertBookToAdventure() {
     formData.append('title', title);
 
     try {
-        const res = await fetch('/api/content/convert', {
-            method: 'POST',
-            body: formData,
+        const res = await fetch('/api/content/convert', { method: 'POST', body: formData });
+
+        let lastData = null;
+        await readSSEStream(res, (data) => {
+            lastData = data;
+            if (data.status === 'error') {
+                statusEl.textContent = `Error: ${data.message}`;
+                statusEl.className = 'info-box error';
+            } else if (data.status === 'complete') {
+                const stats = data.stats || {};
+                const statsStr = [
+                    stats.locations && `${stats.locations} locations`,
+                    stats.npcs && `${stats.npcs} NPCs`,
+                    stats.encounters && `${stats.encounters} encounters`,
+                    stats.creatures && `${stats.creatures} creatures`,
+                ].filter(Boolean).join(', ');
+                statusEl.textContent = `Converted "${data.title}" (${data.chapters_processed} chapters): ${statsStr || 'done'}`;
+                statusEl.className = 'info-box success';
+            } else if (data.status === 'converting') {
+                const pct = data.progress ? `${Math.round(data.progress * 100)}%` : '';
+                statusEl.textContent = `Chapter ${data.chapter}/${data.total}: ${data.title || ''} ${pct}`;
+            } else {
+                statusEl.textContent = data.message || data.status;
+            }
         });
-        const data = await res.json();
 
-        if (data.status === 'complete') {
-            const stats = data.stats || {};
-            const statsStr = [
-                stats.locations && `${stats.locations} locations`,
-                stats.npcs && `${stats.npcs} NPCs`,
-                stats.encounters && `${stats.encounters} encounters`,
-                stats.creatures && `${stats.creatures} creatures`,
-            ].filter(Boolean).join(', ');
-
-            statusEl.textContent = `Converted "${data.title}" (${data.chapters_processed} chapters): ${statsStr || 'done'}`;
-            statusEl.className = 'info-box success';
-
+        if (lastData && lastData.status === 'complete') {
             document.getElementById('upload-title').value = '';
             fileInput.value = '';
-
             await loadContentList();
-        } else {
-            statusEl.textContent = `Error: ${data.message || 'Conversion failed'}`;
-            statusEl.className = 'info-box error';
         }
     } catch (e) {
         statusEl.textContent = `Conversion failed: ${e.message}`;

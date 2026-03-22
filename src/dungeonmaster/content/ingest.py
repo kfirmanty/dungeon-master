@@ -11,14 +11,18 @@ Content types:
 - "book": Default (regular book content, not game-specific)
 """
 
+import logging
 import re
 from pathlib import Path
+from typing import Callable
 
 import psycopg
 
 from bookworm.config import Settings
 from bookworm.embeddings.base import EmbeddingProvider
 from bookworm.ingestion.pipeline import ingest_book
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -135,29 +139,31 @@ def ingest_game_content(
     settings: Settings,
     conn: psycopg.Connection,
     embedding_provider: EmbeddingProvider,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Ingest a game document (rulebook, adventure, etc.) with content tagging.
 
-    This wraps the bookworm ingestion pipeline and then runs the content
-    tagger to classify each chunk.
-
-    Args:
-        file_path: Path to the .txt file
-        title: Document title (e.g. "D&D 5e Basic Rules")
-        content_type: Default content type ("rule", "encounter", "lore", etc.)
-        settings: BookWorm settings
-        conn: Database connection
-        embedding_provider: Embedding provider
-
-    Returns:
-        Dict with book_id and content_type counts.
+    on_progress: Optional callback for progress updates to the client.
     """
+    def _progress(status: str, message: str, progress: float = 0.0):
+        logger.info(message)
+        if on_progress:
+            on_progress({"status": status, "message": message, "progress": progress})
+
     # Step 1: Use existing bookworm ingestion pipeline
-    book_meta = ingest_book(file_path, title, settings, conn, embedding_provider)
+    # Pass through progress for the embedding steps (0-90%)
+    def _ingest_progress(update: dict):
+        scaled = update.get("progress", 0) * 0.9  # scale to 0-90%
+        if on_progress:
+            on_progress({"status": update["status"], "message": update["message"], "progress": scaled})
+
+    book_meta = ingest_book(file_path, title, settings, conn, embedding_provider, on_progress=_ingest_progress)
     book_id = book_meta.id
 
     # Step 2: Tag chunks with content_type
+    _progress("classifying", f"Classifying chunks for '{title}'...", 0.92)
     counts = tag_chunks(conn, book_id, default_type=content_type)
+    _progress("complete", f"Ingested '{title}': {counts}", 1.0)
 
     return {
         "book_id": book_id,

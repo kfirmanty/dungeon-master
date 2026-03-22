@@ -4,9 +4,12 @@ Game session lifecycle — create, load, save game sessions.
 Bridges the in-memory GameSession model with database persistence.
 """
 
+import logging
 from uuid import UUID
 
 import psycopg
+
+logger = logging.getLogger(__name__)
 
 from dungeonmaster.db import repository as repo
 from dungeonmaster.models import GameSession, NarrativeEntry, Scene, SceneType
@@ -34,14 +37,18 @@ def create_new_game(
         rulebook_book_id: ID of ingested rulebook content
     """
     # Create player character
+    logger.info("Creating new game '%s' with rules=%s", name, engine.system_name)
     player_char = engine.create_character(character_choices)
+    logger.info("Created player character: %s", player_char.get("name", "Unknown"))
 
     # Create companions
     companions = []
     if companion_choices:
         for choices in companion_choices:
             choices["is_player"] = False
-            companions.append(engine.create_character(choices))
+            comp = engine.create_character(choices)
+            logger.info("Created companion: %s", comp.get("name", "Unknown"))
+            companions.append(comp)
 
     # Persist to database
     session_id = repo.create_session(

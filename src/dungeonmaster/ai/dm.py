@@ -10,10 +10,14 @@ Two-phase flow per turn:
 2. Rules engine resolves rolls → results fed back to LLM → outcome narration
 """
 
+import logging
+import time
 from typing import Iterator
 
 from bookworm.embeddings.base import EmbeddingProvider
 from bookworm.llm.base import LLMProvider
+
+logger = logging.getLogger(__name__)
 
 from dungeonmaster.ai.actions import (
     ActionResult,
@@ -55,7 +59,9 @@ class DungeonMasterAI:
         - Dice roll results (if any)
         - DM narrative (post-roll, if rolls occurred)
         """
+        turn_start = time.time()
         entries: list[NarrativeEntry] = []
+        logger.info("Processing player input: %s", player_input[:80])
 
         # Record player input
         entries.append(NarrativeEntry(
@@ -68,7 +74,10 @@ class DungeonMasterAI:
         characters = self._build_character_lookup(session)
 
         # Retrieve context via RAG (if embedding provider + DB available)
+        t0 = time.time()
         rule_context, adventure_context = self._retrieve_context(session, player_input)
+        logger.info("RAG retrieval: %d rule chunks, %d adventure chunks (%.1fs)",
+                     len(rule_context), len(adventure_context), time.time() - t0)
 
         # Build system prompt from rules engine info
         system_prompt = self._build_system_prompt(session)
@@ -83,8 +92,13 @@ class DungeonMasterAI:
         )
 
         # Phase 1: LLM generates narrative + roll tags
+        t0 = time.time()
         raw_response = self.llm.generate_chat(messages)
+        logger.info("LLM phase 1 response: %d chars (%.1fs)", len(raw_response), time.time() - t0)
         narrative_text, actions = parse_actions(raw_response)
+        if actions:
+            logger.info("Parsed %d roll tags: %s", len(actions),
+                        ", ".join(a.raw_tag for a in actions))
 
         entries.append(NarrativeEntry(
             actor="dm",

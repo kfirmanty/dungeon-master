@@ -9,11 +9,16 @@ The WebSocket endpoint handles the real-time game interaction:
 
 import asyncio
 import json
+import logging
+import queue
 import tempfile
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 from bookworm.config import get_settings
 from bookworm.db.connection import get_connection, register_vector_type
@@ -222,46 +227,75 @@ async def list_content():
         conn.close()
 
 
+def _sse_event(data: dict) -> str:
+    """Format a dict as a Server-Sent Event line."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
 @router.post("/content/ingest")
 async def ingest_content(
     file: UploadFile = File(...),
     title: str = Form(...),
     content_type: str = Form("adventure"),
 ):
-    """Ingest a text file as game content (adventure, rulebook, etc.).
+    """Ingest a text file with real-time progress via Server-Sent Events.
 
-    The file is chunked, embedded, and tagged with content_type for filtered retrieval.
+    Returns a text/event-stream with progress updates as chunks are embedded.
     """
-    settings, conn, embedding_provider, _, _ = await asyncio.to_thread(_setup)
-    try:
-        # Save uploaded file to temp location
-        content = await file.read()
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="wb") as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
+    logger.info("Ingest request: title='%s', type='%s', file='%s'", title, content_type, file.filename)
 
+    content = await file.read()
+    ext = Path(file.filename).suffix if file.filename else ".txt"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False, mode="wb") as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def on_progress(update: dict):
+        progress_queue.put(update)
+
+    async def generate():
         try:
-            result = await asyncio.to_thread(
-                ingest_game_content,
-                file_path=tmp_path,
-                title=title,
-                content_type=content_type,
-                settings=settings,
-                conn=conn,
-                embedding_provider=embedding_provider,
-            )
-            return {
-                "status": "success",
-                "book_id": str(result["book_id"]),
-                "title": result["title"],
-                "content_type_counts": result["content_type_counts"],
-            }
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    except Exception as e:
-        return ErrorMessage(message=f"Ingestion failed: {e}").model_dump()
-    finally:
-        conn.close()
+            settings, conn, embedding_provider, _, _ = await asyncio.to_thread(_setup)
+            try:
+                # Run ingestion in a thread, collecting progress via queue
+                def _run():
+                    return ingest_game_content(
+                        file_path=tmp_path, title=title, content_type=content_type,
+                        settings=settings, conn=conn,
+                        embedding_provider=embedding_provider, on_progress=on_progress,
+                    )
+
+                task = asyncio.get_event_loop().run_in_executor(None, _run)
+
+                # Poll the queue for progress while the task runs
+                while not task.done():
+                    try:
+                        update = progress_queue.get_nowait()
+                        yield _sse_event(update)
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+
+                # Drain remaining progress events
+                while not progress_queue.empty():
+                    yield _sse_event(progress_queue.get_nowait())
+
+                result = await task
+                yield _sse_event({
+                    "status": "complete",
+                    "book_id": str(result["book_id"]),
+                    "title": result["title"],
+                    "content_type_counts": result["content_type_counts"],
+                })
+            finally:
+                conn.close()
+                tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error("Ingestion failed: %s", e, exc_info=True)
+            yield _sse_event({"status": "error", "message": str(e)})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/content/convert")
@@ -269,47 +303,75 @@ async def convert_content(
     file: UploadFile = File(...),
     title: str = Form(...),
 ):
-    """Convert a novel into a structured RPG adventure.
+    """Convert a novel to an RPG adventure with real-time progress via SSE.
 
-    Reads the book, processes each chapter through the LLM to extract
-    locations, NPCs, encounters, and creatures, then ingests the result.
-    This can take several minutes for a full novel.
+    Streams chapter-by-chapter conversion progress to the client.
     """
-    settings, conn, embedding_provider, llm_provider, _ = await asyncio.to_thread(_setup)
-    try:
-        content = await file.read()
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="wb") as tmp:
-            tmp.write(content)
-            tmp_path = Path(tmp.name)
+    logger.info("Convert request: title='%s', file='%s'", title, file.filename)
 
+    content = await file.read()
+    ext = Path(file.filename).suffix if file.filename else ".txt"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False, mode="wb") as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def on_progress(progress):
+        """Convert ConversionProgress to a dict and enqueue."""
+        progress_queue.put({
+            "status": progress.status,
+            "chapter": progress.current_chapter,
+            "total": progress.total_chapters,
+            "title": progress.current_chapter_title,
+            "progress": progress.current_chapter / max(progress.total_chapters, 1),
+            "stats": progress.stats,
+            "message": f"Converting chapter {progress.current_chapter}/{progress.total_chapters}: {progress.current_chapter_title}",
+        })
+
+    async def generate():
         try:
-            result = await asyncio.to_thread(
-                convert_book_to_adventure,
-                file_path=tmp_path,
-                title=title,
-                llm=llm_provider,
-                settings=settings,
-                conn=conn,
-                embedding_provider=embedding_provider,
-            )
+            settings, conn, embedding_provider, llm_provider, _ = await asyncio.to_thread(_setup)
+            try:
+                def _run():
+                    return convert_book_to_adventure(
+                        file_path=tmp_path, title=title, llm=llm_provider,
+                        settings=settings, conn=conn,
+                        embedding_provider=embedding_provider, on_progress=on_progress,
+                    )
 
-            if "error" in result:
-                return ErrorMessage(message=result["error"]).model_dump()
+                task = asyncio.get_event_loop().run_in_executor(None, _run)
 
-            return {
-                "status": "complete",
-                "adventure_book_id": result["adventure_book_id"],
-                "title": result["title"],
-                "content_type_counts": result.get("content_type_counts", {}),
-                "stats": result.get("stats", {}),
-                "chapters_processed": result.get("chapters_processed", 0),
-            }
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    except Exception as e:
-        return ErrorMessage(message=f"Conversion failed: {e}").model_dump()
-    finally:
-        conn.close()
+                while not task.done():
+                    try:
+                        update = progress_queue.get_nowait()
+                        yield _sse_event(update)
+                    except queue.Empty:
+                        await asyncio.sleep(0.5)
+
+                while not progress_queue.empty():
+                    yield _sse_event(progress_queue.get_nowait())
+
+                result = await task
+                if "error" in result:
+                    yield _sse_event({"status": "error", "message": result["error"]})
+                else:
+                    yield _sse_event({
+                        "status": "complete",
+                        "adventure_book_id": result["adventure_book_id"],
+                        "title": result["title"],
+                        "content_type_counts": result.get("content_type_counts", {}),
+                        "stats": result.get("stats", {}),
+                        "chapters_processed": result.get("chapters_processed", 0),
+                    })
+            finally:
+                conn.close()
+                tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error("Conversion failed: %s", e, exc_info=True)
+            yield _sse_event({"status": "error", "message": str(e)})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ---------------------------------------------------------------------------
