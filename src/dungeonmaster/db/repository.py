@@ -159,25 +159,26 @@ def append_log_entry(
     session_id: UUID,
     entry: NarrativeEntry,
 ) -> None:
-    """Append a narrative entry to the game log."""
-    with conn.cursor() as cur:
-        # Get next sequence number
-        cur.execute(
-            "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM game_log WHERE session_id = %s",
-            (session_id,),
-        )
-        seq = cur.fetchone()[0]
+    """Append a narrative entry to the game log.
 
+    Uses a subquery to atomically compute the next sequence number,
+    avoiding race conditions with concurrent inserts.
+    """
+    with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO game_log
                 (session_id, sequence_number, actor, content, action_type,
                  dice_results, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+                %s,
+                (SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM game_log WHERE session_id = %s),
+                %s, %s, %s, %s, %s
+            )
             """,
             (
                 session_id,
-                seq,
+                session_id,
                 entry.actor,
                 entry.content,
                 entry.action_type,

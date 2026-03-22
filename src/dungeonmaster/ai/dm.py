@@ -146,13 +146,18 @@ class DungeonMasterAI:
         Yields:
         - str: individual tokens from the LLM (for real-time display)
         - NarrativeEntry: completed entries (player input, dice results, etc.)
+
+        IMPORTANT: Entries are added to session.narrative_history immediately
+        so the next turn has correct context. The caller should NOT re-add them.
         """
-        # Record player input
-        yield NarrativeEntry(
+        # Record player input and add to history immediately
+        player_entry = NarrativeEntry(
             actor="player",
             content=player_input,
             action_type="dialogue",
         )
+        session.narrative_history.append(player_entry)
+        yield player_entry
 
         characters = self._build_character_lookup(session)
         rule_context, adventure_context = self._retrieve_context(session, player_input)
@@ -175,11 +180,13 @@ class DungeonMasterAI:
         # Parse roll tags from complete response
         narrative_text, actions = parse_actions(full_response)
 
-        yield NarrativeEntry(
+        dm_entry = NarrativeEntry(
             actor="dm",
             content=narrative_text,
             action_type="narration",
         )
+        session.narrative_history.append(dm_entry)
+        yield dm_entry
 
         # Phase 2: Execute rolls and narrate outcomes
         if actions:

@@ -76,14 +76,134 @@ def _setup():
 # ---------------------------------------------------------------------------
 
 
+def _generate_companions_from_adventure(
+    llm_provider,
+    embedding_provider,
+    conn,
+    adventure_book_id: UUID | None,
+    player_class: str,
+) -> list[dict]:
+    """Use the LLM + adventure RAG to generate adventure-appropriate companions.
+
+    Falls back to class-complementary generic companions if no adventure or LLM fails.
+    """
+    # Class complement mapping for freeplay fallback
+    CLASS_COMPLEMENTS = {
+        "fighter": [("elf", "cleric", "Wise healer"), ("halfling", "rogue", "Nimble scout")],
+        "wizard": [("dwarf", "fighter", "Sturdy protector"), ("half_elf", "cleric", "Devoted healer")],
+        "rogue": [("human", "fighter", "Battle-hardened warrior"), ("elf", "wizard", "Keen arcanist")],
+        "cleric": [("human", "fighter", "Brave swordsman"), ("elf", "ranger", "Sharp-eyed tracker")],
+        "ranger": [("dwarf", "cleric", "Steadfast healer"), ("halfling", "rogue", "Curious troublemaker")],
+        "bard": [("human", "fighter", "Strong arm"), ("dwarf", "cleric", "Grumbling healer")],
+        "paladin": [("elf", "ranger", "Silent scout"), ("halfling", "rogue", "Quick-fingered lockpick")],
+        "barbarian": [("elf", "wizard", "Patient sage"), ("half_elf", "cleric", "Calming healer")],
+        "druid": [("human", "fighter", "Loyal guard"), ("halfling", "rogue", "Mischievous spy")],
+        "monk": [("dwarf", "fighter", "Boisterous brawler"), ("human", "cleric", "Gentle priest")],
+        "sorcerer": [("dwarf", "fighter", "Gruff bodyguard"), ("half_elf", "cleric", "Compassionate medic")],
+        "warlock": [("human", "fighter", "Suspicious soldier"), ("elf", "ranger", "Watchful hunter")],
+    }
+
+    # Try LLM generation if we have an adventure
+    if adventure_book_id and embedding_provider and conn:
+        try:
+            from dungeonmaster.db.repository import search_by_content_type
+
+            query_embedding = embedding_provider.embed_query("important NPCs companions allies party members")
+            npc_chunks = search_by_content_type(
+                conn, query_embedding,
+                content_types=["npc", "lore", "encounter"],
+                top_k=5,
+                book_id=adventure_book_id,
+            )
+            npc_context = "\n---\n".join(c["content"][:500] for c in npc_chunks)
+
+            prompt = f"""Based on this adventure content, create exactly 2 companion NPCs for the player's party.
+The player is a {player_class}. Companions should complement the player's abilities.
+
+Adventure context:
+{npc_context}
+
+For each companion, respond in EXACTLY this format (no other text):
+COMPANION 1
+name: [name from the adventure or fitting the setting]
+race: [one of: human, elf, dwarf, halfling, half_elf, half_orc, tiefling, dragonborn, gnome]
+class: [one of: fighter, wizard, rogue, cleric, ranger, bard, paladin, barbarian, druid, monk, sorcerer, warlock]
+personality: [2-3 sentences about their character, voice, and motivations]
+
+COMPANION 2
+name: [name]
+race: [race]
+class: [class]
+personality: [personality]"""
+
+            response = llm_provider.generate_chat([
+                {"role": "system", "content": "You create D&D 5e companion characters. Follow the format exactly."},
+                {"role": "user", "content": prompt},
+            ])
+
+            # Parse the response
+            companions = []
+            import re
+            for block in re.split(r"COMPANION \d+", response):
+                block = block.strip()
+                if not block:
+                    continue
+                name_m = re.search(r"name:\s*(.+)", block, re.I)
+                race_m = re.search(r"race:\s*(\w+)", block, re.I)
+                class_m = re.search(r"class:\s*(\w+)", block, re.I)
+                pers_m = re.search(r"personality:\s*(.+?)(?:\n\n|\Z)", block, re.I | re.S)
+
+                if name_m and race_m and class_m:
+                    companions.append({
+                        "name": name_m.group(1).strip(),
+                        "race": race_m.group(1).strip().lower().replace(" ", "_"),
+                        "character_class": class_m.group(1).strip().lower(),
+                        "is_player": False,
+                        "personality": pers_m.group(1).strip() if pers_m else "",
+                    })
+
+            if len(companions) >= 2:
+                logger.info("Generated adventure companions: %s", [c["name"] for c in companions[:2]])
+                return companions[:2]
+            logger.warning("LLM companion generation returned %d companions, falling back", len(companions))
+
+        except Exception as e:
+            logger.warning("Failed to generate companions from adventure: %s", e)
+
+    # Fallback: class-complementary generic companions
+    player_lower = player_class.lower()
+    complements = CLASS_COMPLEMENTS.get(player_lower, CLASS_COMPLEMENTS["fighter"])
+    fallback = []
+    for race, cls, desc in complements:
+        fallback.append({
+            "name": f"{'Companion' if not fallback else 'Ally'}",
+            "race": race,
+            "character_class": cls,
+            "is_player": False,
+            "personality": desc,
+        })
+    return fallback
+
+
 @router.post("/game/new")
 async def new_game(request: NewGameRequest):
-    """Create a new game session."""
+    """Create a new game session with AI-generated or provided companions."""
     settings, conn, embedding_provider, llm_provider, engine = await asyncio.to_thread(_setup)
 
     try:
         adventure_id = UUID(request.adventure_book_id) if request.adventure_book_id else None
         rulebook_id = UUID(request.rulebook_book_id) if request.rulebook_book_id else None
+
+        # Generate companions if not explicitly provided
+        companion_choices = request.companions
+        if not companion_choices:
+            player_class = request.character.get("character_class", "fighter")
+            companion_choices = await asyncio.to_thread(
+                _generate_companions_from_adventure,
+                llm_provider, embedding_provider, conn,
+                adventure_id, player_class,
+            )
+            logger.info("Generated companions: %s", [c.get("name") for c in companion_choices])
 
         session = await asyncio.to_thread(
             create_new_game,
@@ -91,7 +211,7 @@ async def new_game(request: NewGameRequest):
             engine=engine,
             name=request.name,
             character_choices=request.character,
-            companion_choices=request.companions,
+            companion_choices=companion_choices,
             adventure_book_id=adventure_id,
             rulebook_book_id=rulebook_id,
         )
@@ -467,9 +587,10 @@ async def game_websocket(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        logger.error("WebSocket error [%s]: %s", type(e).__name__, e, exc_info=True)
         try:
             await websocket.send_json(
-                ErrorMessage(message=f"Server error: {e}").model_dump()
+                ErrorMessage(message=f"Server error ({type(e).__name__}): {e}").model_dump()
             )
         except Exception:
             pass
@@ -591,9 +712,9 @@ async def _handle_player_action(
         ).model_dump())
 
     except Exception as e:
-        logger.error("Turn processing error: %s", e, exc_info=True)
+        logger.error("Turn processing error [%s]: %s", type(e).__name__, e, exc_info=True)
         await ws.send_json(ErrorMessage(
-            message=f"Turn error: {e}. You can try again.",
+            message=f"Turn error ({type(e).__name__}): {e}. You can try again.",
             recoverable=True,
         ).model_dump())
 

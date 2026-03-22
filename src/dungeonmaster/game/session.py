@@ -141,8 +141,15 @@ def append_entries(
     session: GameSession,
     entries: list[NarrativeEntry],
 ) -> None:
-    """Append narrative entries to both the session's history and the database."""
+    """Persist narrative entries to the database and increment turn count.
+
+    NOTE: Entries are already in session.narrative_history (added by the DM
+    during generation for correct context). This function only handles DB
+    persistence.
+    """
     for entry in entries:
-        session.narrative_history.append(entry)
+        # Only add to history if not already there (backward compat)
+        if entry not in session.narrative_history:
+            session.narrative_history.append(entry)
         repo.append_log_entry(conn, session.id, entry)
     session.turn_count += 1
