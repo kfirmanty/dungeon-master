@@ -38,17 +38,25 @@ When a player or companion attempts something with uncertain outcome, you MUST
 embed a roll tag in your response. NEVER determine the outcome of uncertain
 actions yourself — always request a roll and wait for results.
 
-Tag format: [ROLL:check_type:detail:DC_or_target:actor_name]
-Valid check types: {check_types_str}
+CRITICAL FORMAT — you MUST use this EXACT tag syntax with NO spaces around colons:
+[ROLL:check_type:detail:DC_or_target:actor_name]
 
-Examples:
-- [ROLL:skill_check:stealth:DC15:Aelindra]
-- [ROLL:saving_throw:dexterity:DC13:Thorin]
-- [ROLL:attack:longsword:AC16:Aelindra]
-- [ROLL:ability_check:strength:DC20:Bruenor]
+Valid check_type values: {check_types_str}
 
-Place the tag AFTER your narrative setup for the action, on its own line.
-After you receive the roll result, continue narrating based on success or failure.
+CORRECT examples (use EXACTLY this format):
+[ROLL:skill_check:perception:DC12:Aelindra]
+[ROLL:skill_check:stealth:DC15:Aelindra]
+[ROLL:saving_throw:dexterity:DC13:Thorin]
+[ROLL:attack:longsword:AC16:Aelindra]
+[ROLL:ability_check:strength:DC20:Bruenor]
+
+WRONG (do NOT use these formats):
+[ROLL: Perception: DC 10: Aelindra]  ← NO spaces, NO capitalized skill names
+[ROLL:Perception:DC10:Aelindra]      ← check_type is missing, must be skill_check
+
+Place the tag on its own line, AFTER your narrative setup for the action.
+Do NOT narrate the outcome — stop and wait for the roll result.
+Do NOT write more than one paragraph after a roll tag.
 
 COMPANIONS:
 You also control the party's NPC companions. Describe their actions and dialogue

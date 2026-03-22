@@ -17,9 +17,15 @@ import httpx
 class OllamaProvider:
     """LLM provider that calls a local Ollama instance via HTTP."""
 
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.1:8b"):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "llama3.1:8b",
+        temperature: float = 0.7,
+    ):
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._temperature = temperature
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         """Send a chat completion request to Ollama.
@@ -47,6 +53,7 @@ class OllamaProvider:
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
+            "options": {"temperature": self._temperature},
         }
 
         try:
@@ -75,7 +82,12 @@ class OllamaProvider:
     def _send_chat(self, messages: list[dict], stream: bool = False) -> httpx.Response:
         """Shared helper for chat requests."""
         url = f"{self._base_url}/api/chat"
-        payload = {"model": self._model, "messages": messages, "stream": stream}
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": stream,
+            "options": {"temperature": self._temperature},
+        }
 
         try:
             if stream:
@@ -119,7 +131,12 @@ class OllamaProvider:
         Yields individual text tokens as they arrive.
         """
         url = f"{self._base_url}/api/chat"
-        payload = {"model": self._model, "messages": messages, "stream": True}
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": self._temperature},
+        }
 
         try:
             with httpx.stream("POST", url, json=payload, timeout=300.0) as response:

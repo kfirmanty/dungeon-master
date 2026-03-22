@@ -50,6 +50,7 @@ def _setup():
     llm_provider = OllamaProvider(
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
+        temperature=settings.ollama_temperature,
     )
 
     return settings, conn, embedding_provider, llm_provider

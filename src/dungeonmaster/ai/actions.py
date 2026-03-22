@@ -17,11 +17,30 @@ from dungeonmaster.models import AttackResult, CheckResult
 from dungeonmaster.rules.base import RulesEngine
 
 
-# Pattern: [ROLL:type:detail:DC_or_AC_value:actor_name]
-_ROLL_TAG_RE = re.compile(
-    r"\[ROLL:(\w+):(\w+):(?:DC|AC)?(\d+):([^\]]+)\]",
+# Strict 4-field: [ROLL:check_type:detail:DC_or_AC_value:actor_name]
+# Allows optional spaces around colons
+_ROLL_TAG_4 = re.compile(
+    r"\[ROLL\s*:\s*(\w+)\s*:\s*(\w+)\s*:\s*(?:DC|AC)?\s*(\d+)\s*:\s*([^\]]+?)\s*\]",
     re.IGNORECASE,
 )
+
+# Loose 3-field (LLM sometimes skips check_type): [ROLL: detail: DC value: actor]
+_ROLL_TAG_3 = re.compile(
+    r"\[ROLL\s*:\s*(\w+)\s*:\s*(?:DC|AC)\s*(\d+)\s*:\s*([^\]]+?)\s*\]",
+    re.IGNORECASE,
+)
+
+# Skill name → check_type mapping for the 3-field fallback
+_SKILL_TO_CHECK_TYPE = {
+    "perception": "skill_check", "stealth": "skill_check", "athletics": "skill_check",
+    "acrobatics": "skill_check", "arcana": "skill_check", "history": "skill_check",
+    "investigation": "skill_check", "nature": "skill_check", "religion": "skill_check",
+    "animal_handling": "skill_check", "insight": "skill_check", "medicine": "skill_check",
+    "survival": "skill_check", "deception": "skill_check", "intimidation": "skill_check",
+    "performance": "skill_check", "persuasion": "skill_check", "sleight_of_hand": "skill_check",
+    "strength": "saving_throw", "dexterity": "saving_throw", "constitution": "saving_throw",
+    "intelligence": "saving_throw", "wisdom": "saving_throw", "charisma": "saving_throw",
+}
 
 
 @dataclass
@@ -48,22 +67,45 @@ class ActionResult:
 def parse_actions(text: str) -> tuple[str, list[GameAction]]:
     """Extract roll tags from AI output and return clean narrative + actions.
 
+    Handles both strict 4-field format [ROLL:type:detail:DC:actor] and
+    loose 3-field format [ROLL:skill:DC value:actor] that LLMs often produce.
+
     Returns:
         (narrative_text, list_of_actions)
         narrative_text has the [ROLL:...] tags stripped out.
     """
     actions = []
-    for match in _ROLL_TAG_RE.finditer(text):
+    matched_spans = []
+
+    # Try strict 4-field format first
+    for match in _ROLL_TAG_4.finditer(text):
         actions.append(GameAction(
-            action_type=match.group(1).lower(),
-            detail=match.group(2).lower(),
+            action_type=match.group(1).lower().replace(" ", "_"),
+            detail=match.group(2).lower().replace(" ", "_"),
             target_value=int(match.group(3)),
             actor=match.group(4).strip(),
             raw_tag=match.group(0),
         ))
+        matched_spans.append(match.span())
 
-    # Strip tags from narrative
-    clean_text = _ROLL_TAG_RE.sub("", text).strip()
+    # Then try loose 3-field format for any remaining unmatched tags
+    for match in _ROLL_TAG_3.finditer(text):
+        # Skip if this span was already matched by the 4-field regex
+        if any(s[0] <= match.start() < s[1] for s in matched_spans):
+            continue
+        detail = match.group(1).lower().replace(" ", "_")
+        # Infer check_type from the detail name
+        check_type = _SKILL_TO_CHECK_TYPE.get(detail, "skill_check")
+        actions.append(GameAction(
+            action_type=check_type,
+            detail=detail,
+            target_value=int(match.group(2)),
+            actor=match.group(3).strip(),
+            raw_tag=match.group(0),
+        ))
+
+    # Strip all [ROLL...] tags from narrative (catch any format)
+    clean_text = re.sub(r"\[ROLL[^\]]*\]", "", text, flags=re.IGNORECASE).strip()
     # Clean up double blank lines left by tag removal
     clean_text = re.sub(r"\n{3,}", "\n\n", clean_text)
 

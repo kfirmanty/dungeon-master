@@ -87,3 +87,39 @@ class TestParseActions:
         narrative, _ = parse_actions(text)
         # Should not have triple+ newlines
         assert "\n\n\n" not in narrative
+
+    # --- Loose format (3-field, spaces) ---
+
+    def test_loose_3_field_format(self):
+        """LLMs often produce [ROLL: Perception: DC 10: Karol] with spaces and no check_type."""
+        text = "You look around. [ROLL: Perception: DC 10: Karol]"
+        _, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0].detail == "perception"
+        assert actions[0].target_value == 10
+        assert actions[0].actor == "Karol"
+        assert actions[0].action_type == "skill_check"  # inferred from skill name
+
+    def test_loose_with_spaces_around_colons(self):
+        text = "[ROLL : skill_check : stealth : DC 15 : Aelindra]"
+        _, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0].detail == "stealth"
+        assert actions[0].target_value == 15
+
+    def test_loose_saving_throw_inferred(self):
+        """[ROLL: Dexterity: DC 13: Thorin] should infer saving_throw."""
+        text = "[ROLL: Dexterity: DC 13: Thorin]"
+        _, actions = parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0].action_type == "saving_throw"
+        assert actions[0].detail == "dexterity"
+        assert actions[0].target_value == 13
+
+    def test_all_roll_tags_stripped_from_narrative(self):
+        """Any [ROLL...] tag should be stripped, even malformed ones."""
+        text = "Text before. [ROLL: weird format here] Text after."
+        narrative, _ = parse_actions(text)
+        assert "[ROLL" not in narrative
+        assert "Text before" in narrative
+        assert "Text after" in narrative

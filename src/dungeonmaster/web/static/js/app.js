@@ -374,6 +374,11 @@ async function loadAndPlay(sessionId) {
         }
     });
 
+    socket.on('history_entry', (msg) => {
+        // Replayed history entry — render with correct actor styling
+        appendNarrative(msg.actor === 'player' ? 'player' : 'dm', msg.content);
+    });
+
     socket.on('dice_roll', (msg) => {
         endStream(); // end any active stream before showing dice
         appendDiceRoll(msg);

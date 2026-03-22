@@ -64,6 +64,7 @@ def _setup():
     llm_provider = OllamaProvider(
         base_url=settings.ollama_base_url,
         model=settings.ollama_model,
+        temperature=settings.ollama_temperature,
     )
     engine = get_engine(settings.rules_system)
 
@@ -420,6 +421,35 @@ async def game_websocket(websocket: WebSocket, session_id: str):
             in_combat=session.in_combat,
         ).model_dump())
 
+        if session.turn_count == 0:
+            # New game — auto-generate opening scene via the DM
+            logger.info("New game: generating opening narrative for session %s", session_id)
+            await _generate_opening(websocket, dm, session, conn)
+        elif session.narrative_history:
+            # Resumed game — replay recent narrative so the player has context
+            logger.info("Resumed game: replaying %d history entries", len(session.narrative_history))
+            recent = session.narrative_history[-20:]  # last 20 entries
+            for entry in recent:
+                if entry.action_type == "dice_roll" and entry.dice_results:
+                    for dice_data in entry.dice_results:
+                        await websocket.send_json(DiceRollResult(
+                            roller=entry.actor,
+                            description=dice_data.get("description", ""),
+                            dice=dice_data.get("expression", ""),
+                            rolls=dice_data.get("rolls", []),
+                            modifier=dice_data.get("modifier", 0),
+                            total=dice_data.get("total", 0),
+                            success=None, dc=None,
+                        ).model_dump())
+                else:
+                    # Send with actor info so frontend can style player vs DM entries
+                    await websocket.send_json({
+                        "type": "history_entry",
+                        "actor": entry.actor,
+                        "content": entry.content,
+                        "action_type": entry.action_type,
+                    })
+
         # Main game loop
         while True:
             raw = await websocket.receive_json()
@@ -447,6 +477,55 @@ async def game_websocket(websocket: WebSocket, session_id: str):
         conn.close()
 
 
+async def _generate_opening(ws: WebSocket, dm, session, conn):
+    """Generate the opening narrative for a new game.
+
+    Uses a system-level prompt (not recorded as player input) to ask the DM
+    to set the scene. The opening is streamed and saved to the game log.
+    """
+    await ws.send_json(Thinking(active=True).model_dump())
+
+    try:
+        opening_prompt = (
+            "Begin the adventure. Set the scene with a vivid description of where the "
+            "party finds themselves. Describe what they see, hear, and smell. Introduce "
+            "the immediate situation and any NPCs present. End with a question or prompt "
+            "for the player about what they want to do. Do NOT request any dice rolls."
+        )
+
+        def _run():
+            results = []
+            for item in dm.process_player_input_stream(session, opening_prompt):
+                results.append(item)
+            return results
+
+        results = await asyncio.to_thread(_run)
+
+        entries_to_save = []
+        for item in results:
+            if isinstance(item, str):
+                await ws.send_json(NarrativeChunk(text=item).model_dump())
+            elif isinstance(item, NarrativeEntry):
+                # Skip the "player" entry that contains our system prompt
+                if item.actor == "player":
+                    continue
+                entries_to_save.append(item)
+
+        if entries_to_save:
+            await asyncio.to_thread(append_entries, conn, session, entries_to_save)
+
+    except Exception as e:
+        logger.error("Failed to generate opening: %s", e, exc_info=True)
+        # Fall back to a static message
+        await ws.send_json(NarrativeChunk(
+            text="The adventure begins... What do you do?", is_final=True,
+        ).model_dump())
+
+    finally:
+        await ws.send_json(NarrativeChunk(text="", is_final=True).model_dump())
+        await ws.send_json(Thinking(active=False).model_dump())
+
+
 async def _handle_player_action(
     ws: WebSocket,
     dm: DungeonMasterAI,
@@ -454,61 +533,74 @@ async def _handle_player_action(
     conn,
     text: str,
 ):
-    """Process a player action through the DM AI with streaming."""
+    """Process a player action through the DM AI with streaming.
+
+    Errors are caught and sent to the client without killing the WebSocket.
+    """
     await ws.send_json(Thinking(active=True).model_dump())
 
-    entries_to_save: list[NarrativeEntry] = []
+    try:
+        entries_to_save: list[NarrativeEntry] = []
 
-    def _run_turn():
-        """Run the turn resolution in a thread (sync LLM/DB calls)."""
-        results = []
-        for item in dm.process_player_input_stream(session, text):
-            results.append(item)
-        return results
+        def _run_turn():
+            """Run the turn resolution in a thread (sync LLM/DB calls)."""
+            results = []
+            for item in dm.process_player_input_stream(session, text):
+                results.append(item)
+            return results
 
-    # Run sync turn resolution in thread pool
-    results = await asyncio.to_thread(_run_turn)
+        # Run sync turn resolution in thread pool
+        results = await asyncio.to_thread(_run_turn)
 
-    # Process results and send to client
-    for item in results:
-        if isinstance(item, str):
-            # LLM token — stream to client
-            await ws.send_json(NarrativeChunk(text=item).model_dump())
-        elif isinstance(item, NarrativeEntry):
-            entries_to_save.append(item)
-            if item.action_type == "dice_roll" and item.dice_results:
-                # Send dice roll visualization
-                for dice_data in item.dice_results:
-                    await ws.send_json(DiceRollResult(
-                        roller=item.actor,
-                        description=dice_data.get("description", ""),
-                        dice=dice_data.get("expression", ""),
-                        rolls=dice_data.get("rolls", []),
-                        modifier=dice_data.get("modifier", 0),
-                        total=dice_data.get("total", 0),
-                        success=None,
-                        dc=None,
-                    ).model_dump())
+        # Process results and send to client
+        for item in results:
+            if isinstance(item, str):
+                # LLM token — stream to client
+                await ws.send_json(NarrativeChunk(text=item).model_dump())
+            elif isinstance(item, NarrativeEntry):
+                entries_to_save.append(item)
+                if item.action_type == "dice_roll" and item.dice_results:
+                    # Send dice roll visualization
+                    for dice_data in item.dice_results:
+                        await ws.send_json(DiceRollResult(
+                            roller=item.actor,
+                            description=dice_data.get("description", ""),
+                            dice=dice_data.get("expression", ""),
+                            rolls=dice_data.get("rolls", []),
+                            modifier=dice_data.get("modifier", 0),
+                            total=dice_data.get("total", 0),
+                            success=None,
+                            dc=None,
+                        ).model_dump())
 
-    # Signal end of narrative
-    await ws.send_json(NarrativeChunk(text="", is_final=True).model_dump())
-    await ws.send_json(Thinking(active=False).model_dump())
+        # Persist entries
+        if entries_to_save:
+            await asyncio.to_thread(append_entries, conn, session, entries_to_save)
 
-    # Persist entries
-    await asyncio.to_thread(append_entries, conn, session, entries_to_save)
+        # Auto-save periodically
+        game_settings = get_game_settings()
+        if session.turn_count > 0 and session.turn_count % game_settings.auto_save_interval == 0:
+            await asyncio.to_thread(save_game, conn, session)
 
-    # Auto-save periodically
-    game_settings = get_game_settings()
-    if session.turn_count % game_settings.auto_save_interval == 0:
-        await asyncio.to_thread(save_game, conn, session)
+        # Send updated state
+        await ws.send_json(GameStateUpdate(
+            character=session.player_character,
+            companions=session.companions,
+            turn_count=session.turn_count,
+            in_combat=session.in_combat,
+        ).model_dump())
 
-    # Send updated state
-    await ws.send_json(GameStateUpdate(
-        character=session.player_character,
-        companions=session.companions,
-        turn_count=session.turn_count,
-        in_combat=session.in_combat,
-    ).model_dump())
+    except Exception as e:
+        logger.error("Turn processing error: %s", e, exc_info=True)
+        await ws.send_json(ErrorMessage(
+            message=f"Turn error: {e}. You can try again.",
+            recoverable=True,
+        ).model_dump())
+
+    finally:
+        # Always signal end of thinking, even on error
+        await ws.send_json(NarrativeChunk(text="", is_final=True).model_dump())
+        await ws.send_json(Thinking(active=False).model_dump())
 
 
 async def _handle_system_command(ws: WebSocket, session, conn, command: str):

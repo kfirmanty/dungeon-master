@@ -11,6 +11,7 @@ All settings are loaded from environment variables or a `.env` file via `pydanti
 | `EMBEDDING_DIMENSIONS` | `384` | Embedding vector dimensions (must match model) |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama REST API base URL |
 | `OLLAMA_MODEL` | `llama3.1:8b` | Ollama model name for LLM generation |
+| `OLLAMA_TEMPERATURE` | `0.7` | LLM temperature (0.0 = deterministic, 1.0 = creative) |
 | `CHUNK_SIZE` | `500` | Maximum characters per chunk |
 | `CHUNK_OVERLAP` | `100` | Character overlap between consecutive chunks |
 | `TOP_K` | `5` | Number of chunks to retrieve per similarity search |

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Ollama LLM settings
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b"
+    ollama_temperature: float = 0.7  # 0.0 = deterministic, 1.0 = creative
 
     # Chunking: how we split book text into embeddable segments
     chunk_size: int = 500
