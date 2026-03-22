@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dungeon Master</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header id="app-header">
+        <h1>Dungeon Master</h1>
+        <div class="header-actions">
+            <button id="btn-save" class="btn btn-secondary" title="Save Game">Save</button>
+            <button id="btn-menu" class="btn btn-secondary" title="Menu">Menu</button>
+        </div>
+    </header>
+
+    <main id="app-main">
+        <!-- Start Screen -->
+        <section id="screen-start" class="screen active">
+            <div class="start-content">
+                <h2>Begin Your Adventure</h2>
+                <p class="subtitle">A single-player tabletop RPG powered by AI</p>
+
+                <div id="saved-games" class="saved-games"></div>
+
+                <button id="btn-new-game" class="btn btn-primary btn-large">New Game</button>
+            </div>
+        </section>
+
+        <!-- Adventure Selection Screen -->
+        <section id="screen-adventure" class="screen">
+            <div class="creation-form">
+                <h2>Choose Your Adventure</h2>
+
+                <div class="form-group">
+                    <label for="adventure-select">Adventure</label>
+                    <select id="adventure-select">
+                        <option value="">Freeplay (no adventure)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="rulebook-select">Rulebook</label>
+                    <select id="rulebook-select">
+                        <option value="">Default rules (LLM knowledge)</option>
+                    </select>
+                </div>
+
+                <div id="adventure-info" class="info-box">
+                    Select an adventure or play freeplay — the DM will improvise!
+                </div>
+
+                <div class="upload-section">
+                    <h3 style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 8px;">
+                        Upload Content
+                    </h3>
+                    <div class="form-group">
+                        <label for="upload-title">Title</label>
+                        <input type="text" id="upload-title" placeholder="e.g. Curse of Strahd" />
+                    </div>
+                    <div class="form-group">
+                        <label for="upload-type">Type</label>
+                        <select id="upload-type">
+                            <option value="adventure">Adventure</option>
+                            <option value="rule">Rulebook</option>
+                            <option value="lore">Lore / Setting</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="upload-file">File (.txt)</label>
+                        <input type="file" id="upload-file" accept=".txt" />
+                    </div>
+                    <div style="display: flex; gap: var(--space-sm);">
+                        <button id="btn-upload" class="btn btn-secondary">Upload & Ingest</button>
+                        <button id="btn-convert" class="btn btn-primary">Convert Book to Adventure</button>
+                    </div>
+                    <div id="upload-status" class="info-box hidden"></div>
+                </div>
+
+                <button id="btn-continue-to-char" class="btn btn-primary btn-large"
+                        style="margin-top: var(--space-lg)">
+                    Continue to Character Creation
+                </button>
+            </div>
+        </section>
+
+        <!-- Character Creation Screen -->
+        <section id="screen-creation" class="screen">
+            <div class="creation-form">
+                <h2>Create Your Character</h2>
+
+                <div class="form-group">
+                    <label for="char-name">Name</label>
+                    <input type="text" id="char-name" placeholder="Enter character name..." />
+                </div>
+
+                <div class="form-group">
+                    <label for="char-race">Race</label>
+                    <select id="char-race"></select>
+                </div>
+
+                <div class="form-group">
+                    <label for="char-class">Class</label>
+                    <select id="char-class"></select>
+                </div>
+
+                <div id="race-info" class="info-box"></div>
+
+                <button id="btn-create" class="btn btn-primary btn-large">Begin Adventure</button>
+            </div>
+        </section>
+
+        <!-- Game Screen -->
+        <section id="screen-game" class="screen">
+            <div class="game-layout">
+                <!-- Character Sheet Sidebar -->
+                <aside id="panel-character" class="sidebar">
+                    <h3>Character</h3>
+                    <div id="character-sheet"></div>
+                </aside>
+
+                <!-- Main Narrative Area -->
+                <div class="narrative-area">
+                    <div id="narrative-log" class="narrative-log"></div>
+
+                    <div id="thinking-indicator" class="thinking hidden">
+                        <span class="thinking-dots">The DM is thinking</span>
+                    </div>
+
+                    <div class="input-area">
+                        <input type="text" id="player-input"
+                               placeholder="What do you do?"
+                               autocomplete="off" />
+                        <button id="btn-send" class="btn btn-primary">Send</button>
+                    </div>
+                </div>
+
+                <!-- Party Panel Sidebar -->
+                <aside id="panel-party" class="sidebar sidebar-right">
+                    <h3>Party</h3>
+                    <div id="party-list"></div>
+
+                    <div id="combat-panel" class="combat-panel hidden">
+                        <h3>Combat</h3>
+                        <div id="initiative-order"></div>
+                        <div id="combat-actions" class="combat-actions"></div>
+                    </div>
+                </aside>
+            </div>
+        </section>
+    </main>
+
+    <!-- Mobile Tab Navigation -->
+    <nav id="mobile-tabs" class="mobile-tabs hidden">
+        <button class="tab active" data-panel="narrative">Story</button>
+        <button class="tab" data-panel="character">Character</button>
+        <button class="tab" data-panel="party">Party</button>
+    </nav>
+
+    <script type="module" src="/js/app.js"></script>
+</body>
+</html>
